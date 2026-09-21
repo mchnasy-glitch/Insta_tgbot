@@ -1,0 +1,37 @@
+name: Insta To Telegram Bot
+
+on:
+  schedule:
+    - cron: '*/30 * * * *' # هر ۳۰ دقیقه یکبار خودکار اجرا می‌شود
+  workflow_dispatch:       # دکمه اجرای دستی با گوشی
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install pyTelegramBotAPI instaloader requests
+
+      - name: Run Instagram Sync
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHANNEL_ID: ${{ secrets.TG_CHANNEL_ID }}
+        run: |
+          python bot.py
+
+      - name: Save History
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add posted_shortcodes.json || true
+          git commit -m "Update sent posts history" || exit 0
+          git push
