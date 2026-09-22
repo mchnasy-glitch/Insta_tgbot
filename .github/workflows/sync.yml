@@ -19,7 +19,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install pyTelegramBotAPI instaloader requests
+          pip install pyTelegramBotAPI instaloader requests beautifulsoup4
 
       - name: Run Instagram Sync
         env:
