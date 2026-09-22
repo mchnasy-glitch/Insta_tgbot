@@ -35,3 +35,4 @@ jobs:
           git add posted_shortcodes.json || true
           git commit -m "Update sent posts history" || exit 0
           git push
+
