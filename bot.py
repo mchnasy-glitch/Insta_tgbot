@@ -1,10 +1,8 @@
 import os
 import json
 import time
-import requests
-import xml.etree.ElementTree as ET
+import instaloader
 import telebot
-import re
 
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
 CHANNEL_ID = os.environ.get("TG_CHANNEL_ID")
@@ -27,115 +25,66 @@ if os.path.exists(HISTORY_FILE):
         print("خطا در خواندن فایل تاریخچه:", e)
         posted_codes = []
 
-def extract_media_and_text(description_html):
-    """استخراج لینک تصویر و متن از محتوای فید"""
-    img_match = re.search(r'<img[^>]+src="([^">]+)"', description_html)
-    img_url = img_match.group(1) if img_match else None
+# تنظیم Instaloader با تنظیمات امن برای گیت‌هاب
+L = instaloader.Instaloader(
+    download_pictures=False,
+    download_videos=False,
+    download_video_thumbnails=False,
+    download_geotags=False,
+    download_comments=False,
+    save_metadata=False,
+    compress_json=False,
+    user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
+)
+
+print(f"در حال دریافت اطلاعات پیج: {INSTA_USERNAME}")
+
+new_posts_to_send = []
+
+try:
+    profile = instaloader.Profile.from_username(L.context, INSTA_USERNAME)
+    print(f"پیج با موفقیت پیدا شد: {profile.full_name} ({profile.mediacount} پست)")
     
-    # حذف تگ‌های HTML برای به دست آوردن کپشن خالص
-    clean_text = re.sub(r'<br\s*/?>', '\n', description_html)
-    clean_text = re.sub(r'<[^>]+>', '', clean_text).strip()
-    return img_url, clean_text
+    # فقط ۳ پست آخر را بررسی کن تا سرعت بالا باشد و اینستاگرام بلاک نکند
+    count = 0
+    for post in profile.get_posts():
+        if count >= 3:
+            break
+        count += 1
+        
+        shortcode = post.shortcode
+        if shortcode not in posted_codes:
+            new_posts_to_send.append({
+                "shortcode": shortcode,
+                "is_video": post.is_video,
+                "video_url": post.video_url if post.is_video else None,
+                "image_url": post.url,
+                "caption": post.caption or ""
+            })
+            
+except Exception as e:
+    print("خطا در دریافت پست‌ها از طریق Instaloader:", e)
 
-def get_posts_via_mirrors(username):
-    """دریافت پست‌ها از چند سرور ضد بلاک"""
-    mirrors = [
-        f"https://rsshub.app/instagram/user/{username}",
-        f"https://rss.app/feeds/public/instagram/{username}.xml",
-        f"https://feed.eugeneyan.com/instagram/{username}",
-        f"https://bibliogram.pussthecat.org/u/{username}/rss.xml"
-    ]
-    
-    # تلاش با روش‌های دیگر در صورت نیاز
-    for url in mirrors:
-        try:
-            print(f"در حال تلاش برای دریافت از: {url}")
-            res = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-            if res.status_code == 200 and ("<rss" in res.text or "<feed" in res.text or "<xml" in res.text):
-                root = ET.fromstring(res.content)
-                posts = []
-                for item in root.findall(".//item"):
-                    guid = item.find("guid")
-                    link = item.find("link")
-                    desc = item.find("description")
-                    
-                    post_id = (guid.text if guid is not None and guid.text else (link.text if link is not None else ""))
-                    post_id = post_id.strip().split("/")[-1].split("?")[0]
-                    if not post_id:
-                        continue
-                        
-                    html_content = desc.text if desc is not None and desc.text else ""
-                    img_url, caption = extract_media_and_text(html_content)
-                    
-                    posts.append({
-                        "id": post_id,
-                        "image_url": img_url,
-                        "caption": caption,
-                        "link": f"https://www.instagram.com/p/{post_id}/"
-                    })
-                if posts:
-                    print(f"موفقیت: {len(posts)} پست از سرور آینه‌ای دریافت شد.")
-                    return posts
-        except Exception as e:
-            print(f"خطا در {url}: {e}")
-            continue
+print(f"تعداد پست‌های جدید برای ارسال: {len(new_posts_to_send)}")
 
-    # اگر فیدها در دسترس نبودند، از متد مستقیم موبایل با پروکسی رایگان تست کن
-    try:
-        print("تلاش با متد دوم...")
-        mobile_url = f"https://www.instagram.com/{username}/?__a=1&__d=dis"
-        res = requests.get(mobile_url, headers={
-            "User-Agent": "Instagram 219.0.0.12.117 Android",
-            "Accept-Language": "en-US"
-        }, timeout=15)
-        if res.status_code == 200:
-            data = res.json()
-            items = data.get("graphql", {}).get("user", {}).get("edge_owner_to_timeline_media", {}).get("edges", [])
-            posts = []
-            for it in items:
-                n = it.get("node", {})
-                code = n.get("shortcode")
-                cap_edges = n.get("edge_media_to_caption", {}).get("edges", [])
-                cap = cap_edges[0]["node"]["text"] if cap_edges else ""
-                posts.append({
-                    "id": code,
-                    "image_url": n.get("display_url"),
-                    "caption": cap,
-                    "link": f"https://www.instagram.com/p/{code}/"
-                })
-            return posts
-    except Exception as e:
-        print("خطا در متد دوم:", e)
-
-    return []
-
-print(f"شروع بررسی پست‌های پیج: {INSTA_USERNAME}")
-posts = get_posts_via_mirrors(INSTA_USERNAME)
-
-if not posts:
-    print("متأسفانه اینستاگرام در این ساعت آی‌پی را محدود کرده است. در اجرای زمان‌بندی بعدی تلاش خواهد شد.")
-    exit(0)
-
-new_posts = [p for p in reversed(posts) if p["id"] not in posted_codes]
-print(f"تعداد کل پست‌ها: {len(posts)} | پست‌های جدید برای ارسال: {len(new_posts)}")
-
-for post in new_posts:
+# ارسال پست‌ها از قدیمی‌تر به جدیدتر
+for post in reversed(new_posts_to_send):
     caption = post["caption"]
     if len(caption) > 900:
         caption = caption[:900] + "..."
-    caption += f"\n\n🔗 {post['link']}"
+    caption += f"\n\n🔗 instagram.com/p/{post['shortcode']}/"
 
     try:
-        if post["image_url"]:
+        if post["is_video"] and post["video_url"]:
+            bot.send_video(CHANNEL_ID, post["video_url"], caption=caption)
+        elif post["image_url"]:
             bot.send_photo(CHANNEL_ID, post["image_url"], caption=caption)
-        else:
-            bot.send_message(CHANNEL_ID, caption)
             
-        print(f"پست {post['id']} با موفقیت به تلگرام ارسال شد.")
-        posted_codes.append(post["id"])
+        print(f"پست {post['shortcode']} با موفقیت به کانال ارسال شد.")
+        posted_codes.append(post["shortcode"])
         time.sleep(3)
     except Exception as e:
-        print(f"خطا در ارسال به تلگرام: {e}")
+        print(f"خطا در ارسال پست {post['shortcode']} به تلگرام:", e)
 
 # ذخیره تاریخچه
 with open(HISTORY_FILE, "w", encoding="utf-8") as f:
