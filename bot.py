@@ -1,7 +1,8 @@
 import os
 import json
 import time
-import instaloader
+import requests
+from bs4 import BeautifulSoup
 import telebot
 
 BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
@@ -25,69 +26,96 @@ if os.path.exists(HISTORY_FILE):
         print("خطا در خواندن فایل تاریخچه:", e)
         posted_codes = []
 
-# تنظیم Instaloader با تنظیمات امن برای گیت‌هاب
-L = instaloader.Instaloader(
-    download_pictures=False,
-    download_videos=False,
-    download_video_thumbnails=False,
-    download_geotags=False,
-    download_comments=False,
-    save_metadata=False,
-    compress_json=False,
-    user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
-)
-
-print(f"در حال دریافت اطلاعات پیج: {INSTA_USERNAME}")
-
-new_posts_to_send = []
-
-try:
-    profile = instaloader.Profile.from_username(L.context, INSTA_USERNAME)
-    print(f"پیج با موفقیت پیدا شد: {profile.full_name} ({profile.mediacount} پست)")
+def get_posts_via_imginn(username):
+    """استفاده از آینه‌های اینستاگرام برای دور زدن محدودیت ۴۲۹"""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
     
-    # فقط ۳ پست آخر را بررسی کن تا سرعت بالا باشد و اینستاگرام بلاک نکند
-    count = 0
-    for post in profile.get_posts():
-        if count >= 3:
-            break
-        count += 1
-        
-        shortcode = post.shortcode
-        if shortcode not in posted_codes:
-            new_posts_to_send.append({
-                "shortcode": shortcode,
-                "is_video": post.is_video,
-                "video_url": post.video_url if post.is_video else None,
-                "image_url": post.url,
-                "caption": post.caption or ""
-            })
+    services = [
+        f"https://imginn.com/{username}/",
+        f"https://dumpoir.com/v/{username}"
+    ]
+    
+    posts = []
+    
+    for url in services:
+        try:
+            print(f"در حال تلاش برای دریافت از: {url}")
+            res = requests.get(url, headers=headers, timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, "html.parser")
+                
+                # خواندن ساختار Imginn
+                items = soup.find_all("div", class_="item")
+                if not items:
+                    items = soup.find_all("div", class_="media-item")
+                    
+                for item in items[:4]:
+                    a_tag = item.find("a")
+                    img_tag = item.find("img")
+                    if not a_tag:
+                        continue
+                        
+                    href = a_tag.get("href", "")
+                    # استخراج آیدی یا کد پست
+                    post_id = href.strip("/").split("/")[-1]
+                    
+                    img_url = ""
+                    if img_tag:
+                        img_url = img_tag.get("data-src") or img_tag.get("src") or ""
+                        
+                    desc = item.find("div", class_="desc")
+                    caption = desc.text.strip() if desc else ""
+                    
+                    if post_id and (post_id not in [p["id"] for p in posts]):
+                        posts.append({
+                            "id": post_id,
+                            "image_url": img_url,
+                            "caption": caption,
+                            "link": f"https://www.instagram.com/p/{post_id}/"
+                        })
+                        
+                if posts:
+                    print(f"موفقیت: {len(posts)} پست پیدا شد.")
+                    return posts
+        except Exception as e:
+            print(f"خطا در سرویس {url}: {e}")
+            continue
             
-except Exception as e:
-    print("خطا در دریافت پست‌ها از طریق Instaloader:", e)
+    return posts
 
-print(f"تعداد پست‌های جدید برای ارسال: {len(new_posts_to_send)}")
+print(f"شروع بررسی پیج {INSTA_USERNAME}...")
+posts = get_posts_via_imginn(INSTA_USERNAME)
 
-# ارسال پست‌ها از قدیمی‌تر به جدیدتر
-for post in reversed(new_posts_to_send):
+if not posts:
+    print("هیچ پستی یافت نشد. در نوبت بعدی بررسی خواهد شد.")
+    exit(0)
+
+# جداسازی پست‌های جدید
+new_posts = [p for p in reversed(posts) if p["id"] not in posted_codes]
+print(f"تعداد کل پست‌ها: {len(posts)} | پست‌های جدید: {len(new_posts)}")
+
+for post in new_posts:
     caption = post["caption"]
     if len(caption) > 900:
         caption = caption[:900] + "..."
-    caption += f"\n\n🔗 instagram.com/p/{post['shortcode']}/"
+    caption += f"\n\n🔗 {post['link']}"
 
     try:
-        if post["is_video"] and post["video_url"]:
-            bot.send_video(CHANNEL_ID, post["video_url"], caption=caption)
-        elif post["image_url"]:
+        if post["image_url"] and post["image_url"].startswith("http"):
             bot.send_photo(CHANNEL_ID, post["image_url"], caption=caption)
+        else:
+            bot.send_message(CHANNEL_ID, caption)
             
-        print(f"پست {post['shortcode']} با موفقیت به کانال ارسال شد.")
-        posted_codes.append(post["shortcode"])
+        print(f"پست {post['id']} با موفقیت به تلگرام فرستاده شد.")
+        posted_codes.append(post["id"])
         time.sleep(3)
     except Exception as e:
-        print(f"خطا در ارسال پست {post['shortcode']} به تلگرام:", e)
+        print(f"خطا در ارسال پست {post['id']}: {e}")
 
 # ذخیره تاریخچه
 with open(HISTORY_FILE, "w", encoding="utf-8") as f:
     json.dump(posted_codes, f, ensure_ascii=False, indent=2)
 
-print("عملیات پایان یافت.")
+print("پایان عملیات.")
